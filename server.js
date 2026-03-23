@@ -72,17 +72,17 @@ app.get("/", (req, res) => {
   </div>
 
   <div class="filter-row">
-    <button class="fbtn active-all" onclick="setFilter('ALL')">ALL</button>
-    <button class="fbtn" onclick="setFilter('FLIP')">FLIP</button>
-    <button class="fbtn" onclick="setFilter('RENTAL')">RENTAL</button>
-    <button class="fbtn" onclick="setFilter('STR')">STR / AIRBNB</button>
+    <button class="fbtn active-all" onclick="setFilter('ALL',this)">ALL</button>
+    <button class="fbtn" onclick="setFilter('FLIP',this)">FLIP</button>
+    <button class="fbtn" onclick="setFilter('RENTAL',this)">RENTAL</button>
+    <button class="fbtn" onclick="setFilter('STR',this)">STR / AIRBNB</button>
     <button id="scanBtn" onclick="scan()">⬡ SCAN DEALS</button>
   </div>
 
   <div id="status"></div>
   <div id="error"></div>
   <div id="loading"><div class="spinner"></div>Pulling live Zillow listings...</div>
-  <div id="empty">No properties match filters. Try adjusting price or beds.</div>
+  <div id="empty">No properties match filters.</div>
   <div id="grid"></div>
   <footer>Live Zillow data via RapidAPI · scores are estimates · verify all data · not financial advice</footer>
 </div>
@@ -91,13 +91,11 @@ app.get("/", (req, res) => {
 let allListings = [];
 let currentFilter = 'ALL';
 
-function setFilter(f) {
+function setFilter(f, el) {
   currentFilter = f;
-  document.querySelectorAll('.fbtn').forEach(b => {
-    b.className = 'fbtn';
-  });
+  document.querySelectorAll('.fbtn').forEach(b => b.className = 'fbtn');
   const map = {ALL:'active-all',FLIP:'active-flip',RENTAL:'active-rental',STR:'active-str'};
-  event.target.classList.add(map[f]);
+  el.classList.add(map[f]);
   renderCards();
 }
 
@@ -151,7 +149,8 @@ function cardHTML(p){
   const ppsf=p.sqft>0?Math.round(p.price/p.sqft):'-';
   const nightly=p.beds>=4?165:p.beds===3?135:p.beds===2?110:85;
   const est=Math.round(nightly*30*0.65);
-  const zurl=p.zpid?'https://www.zillow.com/homedetails/'+p.zpid+'_zpid/':'';
+  const zurl=p.zpid?'https://www.zillow.com/homedetails/'+p.zpid+'_zpid/':
+             p.url?p.url:'';
   return '<div class="card" style="border-top-color:'+top.color+';border-color:'+top.color+'35">'+
     '<div class="card-badge" style="background:'+top.color+'">'+top.label+'</div>'+
     '<div class="card-addr">'+p.address+'</div>'+
@@ -172,13 +171,8 @@ function cardHTML(p){
 }
 
 function renderCards(){
-  const minP=Number(document.getElementById('minPrice').value);
-  const maxP=Number(document.getElementById('maxPrice').value);
-  const minB=Number(document.getElementById('minBeds').value);
   const f=currentFilter;
   const filtered=allListings.filter(p=>{
-    if(p.price<minP||p.price>maxP)return false;
-    if(p.beds<minB)return false;
     if(f==='FLIP')return scoreFlip(p)>=45;
     if(f==='RENTAL')return scoreRental(p)>=45;
     if(f==='STR')return scoreSTR(p)>=45;
@@ -191,6 +185,9 @@ function renderCards(){
 
 async function scan(){
   const btn=document.getElementById('scanBtn');
+  const minP=document.getElementById('minPrice').value;
+  const maxP=document.getElementById('maxPrice').value;
+  const minB=document.getElementById('minBeds').value;
   btn.disabled=true; btn.textContent='SCANNING...';
   document.getElementById('error').style.display='none';
   document.getElementById('loading').style.display='block';
@@ -201,25 +198,47 @@ async function scan(){
   try{
     const results=[];
     for(let page=1;page<=2;page++){
-      const res=await fetch('/search?location=Laredo%2C+TX&page='+page);
+      const params=new URLSearchParams({
+        location:'Laredo, TX',
+        page,
+        home_status:'FOR_SALE',
+        sort:'NEWEST',
+        min_price:minP,
+        max_price:maxP,
+        min_bedrooms:minB
+      });
+      const res=await fetch('/search?'+params.toString());
       if(!res.ok)throw new Error('API error '+res.status);
       const data=await res.json();
-      const raw=data?.data?.results||data?.results||[];
+      // Parse response - try multiple field name patterns
+      const raw=data?.data?.results||data?.results||data?.data?.home_search?.results||[];
+      if(raw.length===0)break;
       raw.forEach(p=>{
-        const price=Number(p.price)||0;
+        const price=Number(p.price||p.listPrice||p.list_price||0);
         if(price>0)results.push({
-          address:p.address||p.streetAddress||'Address unavailable',
-          city:p.city||'Laredo',zip:p.zipcode||'',
-          price,beds:Number(p.bedrooms)||0,baths:Number(p.bathrooms)||0,
-          sqft:Number(p.livingArea)||0,type:p.homeType||'',
-          dom:Number(p.daysOnMarket)||0,cuts:Number(p.priceReductionCount)||0,
-          zpid:p.zpid||''
+          address:p.address||p.streetAddress||p.street_address||'Address unavailable',
+          city:p.city||'Laredo',
+          zip:p.zipcode||p.zip_code||p.zip||'',
+          price,
+          beds:Number(p.bedrooms||p.beds||0),
+          baths:Number(p.bathrooms||p.baths||0),
+          sqft:Number(p.livingArea||p.living_area||p.sqft||p.square_feet||0),
+          type:p.homeType||p.home_type||p.propertyType||p.property_type||'',
+          dom:Number(p.daysOnMarket||p.days_on_market||p.dom||0),
+          cuts:Number(p.priceReductionCount||p.price_reduction_count||0),
+          zpid:p.zpid||'',
+          url:p.url||p.detailUrl||p.detail_url||''
         });
       });
-      if(raw.length<8)break;
+      if(raw.length<10)break;
     }
-    if(results.length===0){document.getElementById('error').textContent='⚠ No listings returned. Try again.';document.getElementById('error').style.display='block';}
-    else{allListings=results;renderCards();}
+    if(results.length===0){
+      document.getElementById('error').textContent='⚠ No listings returned. Try again in a moment.';
+      document.getElementById('error').style.display='block';
+    } else {
+      allListings=results;
+      renderCards();
+    }
   }catch(e){
     document.getElementById('error').textContent='⚠ '+e.message;
     document.getElementById('error').style.display='block';
@@ -235,18 +254,17 @@ async function scan(){
 
 // ─── Proxy RapidAPI ───────────────────────────────────────────────────────────
 app.get("/search", async (req, res) => {
-  const location = req.query.location || "Laredo, TX";
-  const page = req.query.page || "1";
   try {
-    const url = new URL("https://real-time-zillow-data.p.rapidapi.com/search");
-    url.searchParams.set("location", location);
-    url.searchParams.set("listingCategory", "House For Sale");
-    url.searchParams.set("page", page);
-    url.searchParams.set("sortSelection", "days");
+    const url = new URL("https://real-time-real-estate-data-mega.p.rapidapi.com/search");
+    // Pass through all query params from the client
+    const allowed = ['location','page','home_status','home_type','sort','min_price','max_price','min_bedrooms','max_bedrooms','min_bathrooms','min_sqft'];
+    for (const key of allowed) {
+      if (req.query[key] !== undefined) url.searchParams.set(key, req.query[key]);
+    }
     const response = await fetch(url.toString(), {
       headers: {
         "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "real-time-zillow-data.p.rapidapi.com",
+        "X-RapidAPI-Host": "real-time-real-estate-data-mega.p.rapidapi.com",
       },
     });
     const data = await response.json();
